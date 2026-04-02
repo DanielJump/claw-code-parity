@@ -36,7 +36,7 @@ impl From<ConfigError> for PromptBuildError {
 
 pub const SYSTEM_PROMPT_DYNAMIC_BOUNDARY: &str = "__SYSTEM_PROMPT_DYNAMIC_BOUNDARY__";
 pub const FRONTIER_MODEL_NAME: &str = "Claude Opus 4.6";
-const MAX_INSTRUCTION_FILE_CHARS: usize = 4_000;
+const MAX_INSTRUCTION_FILE_CHARS: usize = 100_000;
 const MAX_TOTAL_INSTRUCTION_CHARS: usize = 12_000;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -226,13 +226,52 @@ fn discover_instruction_files(cwd: &Path) -> std::io::Result<Vec<ContextFile>> {
 fn push_context_file(files: &mut Vec<ContextFile>, path: PathBuf) -> std::io::Result<()> {
     match fs::read_to_string(&path) {
         Ok(content) if !content.trim().is_empty() => {
-            files.push(ContextFile { path, content });
+            let base_dir = path.parent().unwrap_or_else(|| std::path::Path::new("."));
+            let resolved = resolve_at_includes(&content, base_dir);
+            files.push(ContextFile {
+                path,
+                content: resolved,
+            });
             Ok(())
         }
         Ok(_) => Ok(()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(error) => Err(error),
     }
+}
+
+fn resolve_at_includes(content: &str, base_dir: &std::path::Path) -> String {
+    let mut result = String::with_capacity(content.len());
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with('@') && !trimmed.starts_with("@@") {
+            let ref_path = trimmed.trim_start_matches('@').trim();
+            if !ref_path.is_empty() {
+                let resolved_path = base_dir.join(ref_path);
+                match fs::read_to_string(&resolved_path) {
+                    Ok(included) => {
+                        result.push_str(&format!(
+                            "## Included from {}\n\n",
+                            resolved_path.display()
+                        ));
+                        // Recursively resolve includes in the included file
+                        let included_base = resolved_path
+                            .parent()
+                            .unwrap_or_else(|| std::path::Path::new("."));
+                        result.push_str(&resolve_at_includes(&included, included_base));
+                        result.push('\n');
+                        continue;
+                    }
+                    Err(_) => {
+                        // Leave the @reference as-is if file not found
+                    }
+                }
+            }
+        }
+        result.push_str(line);
+        result.push('\n');
+    }
+    result
 }
 
 fn read_git_status(cwd: &Path) -> Option<String> {

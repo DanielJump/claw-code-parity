@@ -106,7 +106,20 @@ async fn execute_bash_async(
 ) -> io::Result<BashCommandOutput> {
     let mut command = prepare_tokio_command(&input.command, &cwd, &sandbox_status, true);
 
-    let output_result = if let Some(timeout_ms) = input.timeout {
+    let default_timeout: Option<u64> = env::var("BASH_DEFAULT_TIMEOUT_MS")
+        .ok()
+        .and_then(|v| v.parse().ok());
+    let max_timeout: Option<u64> = env::var("BASH_MAX_TIMEOUT_MS")
+        .ok()
+        .and_then(|v| v.parse().ok());
+    let timeout_ms = input
+        .timeout
+        .or(default_timeout)
+        .map(|t| match max_timeout {
+            Some(max) => t.min(max),
+            None => t,
+        });
+    let output_result = if let Some(timeout_ms) = timeout_ms {
         match timeout(Duration::from_millis(timeout_ms), command.output()).await {
             Ok(result) => (result?, false),
             Err(_) => {
