@@ -50,7 +50,13 @@ const GIT_SHA: Option<&str> = option_env!("GIT_SHA");
 
 type AllowedToolSet = BTreeSet<String>;
 
+fn enable_ansi_support() {
+    // Force crossterm to enable ENABLE_VIRTUAL_TERMINAL_PROCESSING on Windows
+    let _ = crossterm::execute!(io::stdout(), crossterm::style::ResetColor);
+}
+
 fn main() {
+    enable_ansi_support();
     if let Err(error) = run() {
         eprintln!(
             "error: {error}
@@ -1042,12 +1048,12 @@ impl LiveCli {
 ██║     ██║     ███████║██║ █╗ ██║\n\
 ██║     ██║     ██╔══██║██║███╗██║\n\
 ╚██████╗███████╗██║  ██║╚███╔███╔╝\n\
- ╚═════╝╚══════╝╚═╝  ╚═╝ ╚══╝╚══╝\x1b[0m \x1b[38;5;208mCode\x1b[0m 🦞\n\n\
+ ╚═════╝╚══════╝╚═╝  ╚═╝ ╚══╝╚══╝\x1b[0m \x1b[38;5;208mCode\x1b[0m\n\n\
   \x1b[2mModel\x1b[0m            {}\n\
   \x1b[2mPermissions\x1b[0m      {}\n\
   \x1b[2mDirectory\x1b[0m        {}\n\
   \x1b[2mSession\x1b[0m          {}\n\n\
-  Type \x1b[1m/help\x1b[0m for commands · \x1b[2mShift+Enter\x1b[0m for newline",
+  Type \x1b[1m/help\x1b[0m for commands",
             self.model,
             self.permission_mode.as_str(),
             cwd,
