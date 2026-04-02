@@ -224,8 +224,24 @@ fn prepare_tokio_command(
         return prepared;
     }
 
-    let mut prepared = TokioCommand::new("sh");
-    prepared.arg("-lc").arg(command).current_dir(cwd);
+    let mut prepared = if cfg!(target_os = "windows") {
+        // Use Git Bash explicitly to avoid WSL's bash.exe on Windows
+        let git_bash = std::env::var("GIT_BASH")
+            .ok()
+            .or_else(|| {
+                let candidate = std::path::PathBuf::from(r"C:\Program Files\Git\bin\bash.exe");
+                candidate.exists().then(|| candidate.to_string_lossy().into_owned())
+            })
+            .unwrap_or_else(|| "bash".to_string());
+        let mut cmd = TokioCommand::new(git_bash);
+        cmd.arg("-lc").arg(command);
+        cmd
+    } else {
+        let mut cmd = TokioCommand::new("sh");
+        cmd.arg("-lc").arg(command);
+        cmd
+    };
+    prepared.current_dir(cwd);
     if sandbox_status.filesystem_active {
         prepared.env("HOME", cwd.join(".sandbox-home"));
         prepared.env("TMPDIR", cwd.join(".sandbox-tmp"));
