@@ -12,8 +12,8 @@ use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use api::{
-    resolve_startup_auth_source, AnthropicClient, AuthSource, ContentBlockDelta, InputContentBlock,
-    InputMessage, MessageRequest, MessageResponse, OutputContentBlock,
+    resolve_startup_auth_source, AnthropicClient, ApiCompatConfig, AuthSource, ContentBlockDelta,
+    InputContentBlock, InputMessage, MessageRequest, MessageResponse, OutputContentBlock,
     StreamEvent as ApiStreamEvent, ToolChoice, ToolDefinition, ToolResultContentBlock,
 };
 
@@ -455,9 +455,12 @@ fn default_oauth_config() -> OAuthConfig {
         callback_port: None,
         manual_redirect_url: None,
         scopes: vec![
+            String::from("org:create_api_key"),
             String::from("user:profile"),
             String::from("user:inference"),
             String::from("user:sessions:claude_code"),
+            String::from("user:mcp_servers"),
+            String::from("user:file_upload"),
         ],
     }
 }
@@ -505,11 +508,16 @@ fn run_login() -> Result<(), Box<dyn std::error::Error>> {
     let runtime = tokio::runtime::Runtime::new()?;
     let token_set = runtime.block_on(client.exchange_oauth_code(oauth, &exchange_request))?;
     save_oauth_credentials(&runtime::OAuthTokenSet {
-        access_token: token_set.access_token,
+        access_token: token_set.access_token.clone(),
         refresh_token: token_set.refresh_token,
         expires_at: token_set.expires_at,
         scopes: token_set.scopes,
     })?;
+
+    println!("Exchanging OAuth token for API key...");
+    let api_key_response =
+        runtime.block_on(client.create_api_key(&token_set.access_token))?;
+    runtime::save_api_key(&api_key_response.raw_key)?;
     println!("Claude OAuth login complete.");
     Ok(())
 }
@@ -2397,13 +2405,18 @@ impl AnthropicRuntimeClient {
         Ok(Self {
             runtime: tokio::runtime::Runtime::new()?,
             client: AnthropicClient::from_auth(resolve_cli_auth_source()?)
-                .with_base_url(api::read_base_url()),
+                .with_base_url(api::read_base_url())
+                .with_compat(load_api_compat_config()),
             model,
             enable_tools,
             emit_output,
             allowed_tools,
         })
     }
+}
+
+fn load_api_compat_config() -> ApiCompatConfig {
+    ApiCompatConfig::load_from(&runtime::config::resolve_config_home().join("api-compat.json"))
 }
 
 fn resolve_cli_auth_source() -> Result<AuthSource, Box<dyn std::error::Error>> {
@@ -2419,11 +2432,26 @@ fn resolve_cli_auth_source() -> Result<AuthSource, Box<dyn std::error::Error>> {
 impl ApiClient for AnthropicRuntimeClient {
     #[allow(clippy::too_many_lines)]
     fn stream(&mut self, request: ApiRequest) -> Result<Vec<AssistantEvent>, RuntimeError> {
+        let system = {
+            let mut parts: Vec<String> = Vec::new();
+            if !self.client.compat.billing_header.is_empty() {
+                parts.push(self.client.compat.billing_header.clone());
+            }
+            parts.extend(request.system_prompt.iter().cloned());
+            if parts.is_empty() {
+                None
+            } else {
+                Some(parts.into_iter().map(|text| api::SystemBlock {
+                    block_type: "text".to_string(),
+                    text,
+                }).collect())
+            }
+        };
         let message_request = MessageRequest {
             model: self.model.clone(),
             max_tokens: max_tokens_for_model(&self.model),
             messages: convert_messages(&request.messages),
-            system: (!request.system_prompt.is_empty()).then(|| request.system_prompt.join("\n\n")),
+            system,
             tools: self.enable_tools.then(|| {
                 filter_tool_specs(self.allowed_tools.as_ref())
                     .into_iter()
@@ -2436,6 +2464,7 @@ impl ApiClient for AnthropicRuntimeClient {
             }),
             tool_choice: self.enable_tools.then_some(ToolChoice::Auto),
             stream: true,
+            metadata: None,
         };
 
         self.runtime.block_on(async {

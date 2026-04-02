@@ -2,8 +2,8 @@ use std::collections::VecDeque;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use runtime::{
-    load_oauth_credentials, save_oauth_credentials, OAuthConfig, OAuthRefreshRequest,
-    OAuthTokenExchangeRequest,
+    load_api_key, load_oauth_credentials, save_oauth_credentials, OAuthConfig,
+    OAuthRefreshRequest, OAuthTokenExchangeRequest,
 };
 use serde::Deserialize;
 
@@ -18,6 +18,11 @@ const ALT_REQUEST_ID_HEADER: &str = "x-request-id";
 const DEFAULT_INITIAL_BACKOFF: Duration = Duration::from_millis(200);
 const DEFAULT_MAX_BACKOFF: Duration = Duration::from_secs(2);
 const DEFAULT_MAX_RETRIES: u32 = 2;
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct CreateApiKeyResponse {
+    pub raw_key: String,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AuthSource {
@@ -100,6 +105,38 @@ impl From<OAuthTokenSet> for AuthSource {
     }
 }
 
+#[derive(Debug, Clone, Deserialize)]
+pub struct ApiCompatConfig {
+    #[serde(default)]
+    pub anthropic_beta: String,
+    #[serde(default)]
+    pub user_agent: String,
+    #[serde(default)]
+    pub x_app: String,
+    #[serde(default)]
+    pub billing_header: String,
+}
+
+impl Default for ApiCompatConfig {
+    fn default() -> Self {
+        Self {
+            anthropic_beta: String::new(),
+            user_agent: String::new(),
+            x_app: String::new(),
+            billing_header: String::new(),
+        }
+    }
+}
+
+impl ApiCompatConfig {
+    pub fn load_from(path: &std::path::Path) -> Self {
+        std::fs::read_to_string(path)
+            .ok()
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or_default()
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct AnthropicClient {
     http: reqwest::Client,
@@ -108,6 +145,7 @@ pub struct AnthropicClient {
     max_retries: u32,
     initial_backoff: Duration,
     max_backoff: Duration,
+    pub compat: ApiCompatConfig,
 }
 
 impl AnthropicClient {
@@ -120,6 +158,7 @@ impl AnthropicClient {
             max_retries: DEFAULT_MAX_RETRIES,
             initial_backoff: DEFAULT_INITIAL_BACKOFF,
             max_backoff: DEFAULT_MAX_BACKOFF,
+            compat: ApiCompatConfig::default(),
         }
     }
 
@@ -132,7 +171,14 @@ impl AnthropicClient {
             max_retries: DEFAULT_MAX_RETRIES,
             initial_backoff: DEFAULT_INITIAL_BACKOFF,
             max_backoff: DEFAULT_MAX_BACKOFF,
+            compat: ApiCompatConfig::default(),
         }
+    }
+
+    #[must_use]
+    pub fn with_compat(mut self, compat: ApiCompatConfig) -> Self {
+        self.compat = compat;
+        self
     }
 
     pub fn from_env() -> Result<Self, ApiError> {
@@ -270,6 +316,26 @@ impl AnthropicClient {
             .map_err(ApiError::from)
     }
 
+    pub async fn create_api_key(
+        &self,
+        bearer_token: &str,
+    ) -> Result<CreateApiKeyResponse, ApiError> {
+        let url = format!("{}/api/oauth/claude_cli/create_api_key", self.base_url);
+        let response = self
+            .http
+            .post(&url)
+            .header("content-type", "application/x-www-form-urlencoded")
+            .bearer_auth(bearer_token)
+            .send()
+            .await
+            .map_err(ApiError::from)?;
+        let response = expect_success(response).await?;
+        response
+            .json::<CreateApiKeyResponse>()
+            .await
+            .map_err(ApiError::from)
+    }
+
     async fn send_with_retry(
         &self,
         request: &MessageRequest,
@@ -310,12 +376,22 @@ impl AnthropicClient {
         &self,
         request: &MessageRequest,
     ) -> Result<reqwest::Response, ApiError> {
-        let request_url = format!("{}/v1/messages", self.base_url.trim_end_matches('/'));
-        let request_builder = self
+        let request_url = format!("{}/v1/messages?beta=true", self.base_url.trim_end_matches('/'));
+        let mut request_builder = self
             .http
             .post(&request_url)
             .header("anthropic-version", ANTHROPIC_VERSION)
+            .header("anthropic-dangerous-direct-browser-access", "true")
             .header("content-type", "application/json");
+        if !self.compat.anthropic_beta.is_empty() {
+            request_builder = request_builder.header("anthropic-beta", &self.compat.anthropic_beta);
+        }
+        if !self.compat.user_agent.is_empty() {
+            request_builder = request_builder.header("user-agent", &self.compat.user_agent);
+        }
+        if !self.compat.x_app.is_empty() {
+            request_builder = request_builder.header("x-app", &self.compat.x_app);
+        }
         let mut request_builder = self.auth.apply(request_builder);
 
         request_builder = request_builder.json(request);
@@ -349,6 +425,9 @@ impl AuthSource {
         }
         if let Some(bearer_token) = read_env_non_empty("ANTHROPIC_AUTH_TOKEN")? {
             return Ok(Self::BearerToken(bearer_token));
+        }
+        if let Ok(Some(api_key)) = load_api_key() {
+            return Ok(Self::ApiKey(api_key));
         }
         match load_saved_oauth_token() {
             Ok(Some(token_set)) if oauth_token_is_expired(&token_set) => {
@@ -397,6 +476,9 @@ where
     }
     if let Some(bearer_token) = read_env_non_empty("ANTHROPIC_AUTH_TOKEN")? {
         return Ok(AuthSource::BearerToken(bearer_token));
+    }
+    if let Ok(Some(api_key)) = load_api_key() {
+        return Ok(AuthSource::ApiKey(api_key));
     }
 
     let Some(token_set) = load_saved_oauth_token()? else {

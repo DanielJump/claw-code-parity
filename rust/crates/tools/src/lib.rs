@@ -1670,10 +1670,16 @@ impl ApiClient for AnthropicRuntimeClient {
             model: self.model.clone(),
             max_tokens: 32_000,
             messages: convert_messages(&request.messages),
-            system: (!request.system_prompt.is_empty()).then(|| request.system_prompt.join("\n\n")),
+            system: (!request.system_prompt.is_empty()).then(|| {
+                request.system_prompt.iter().map(|text| api::SystemBlock {
+                    block_type: "text".to_string(),
+                    text: text.clone(),
+                }).collect()
+            }),
             tools: (!tools.is_empty()).then_some(tools),
             tool_choice: (!self.allowed_tools.is_empty()).then_some(ToolChoice::Auto),
             stream: true,
+            metadata: None,
         };
 
         self.runtime.block_on(async {

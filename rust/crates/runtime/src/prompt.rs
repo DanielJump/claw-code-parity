@@ -190,6 +190,18 @@ pub fn prepend_bullets(items: Vec<String>) -> Vec<String> {
 }
 
 fn discover_instruction_files(cwd: &Path) -> std::io::Result<Vec<ContextFile>> {
+    let mut files = Vec::new();
+
+    // Load global user instructions from config home (like real Claude Code)
+    let config_home = crate::config::resolve_config_home();
+    for candidate in [
+        config_home.join("CLAUDE.md"),
+        config_home.join("instructions.md"),
+    ] {
+        push_context_file(&mut files, candidate)?;
+    }
+
+    // Walk from root to cwd for project instructions
     let mut directories = Vec::new();
     let mut cursor = Some(cwd);
     while let Some(dir) = cursor {
@@ -198,7 +210,6 @@ fn discover_instruction_files(cwd: &Path) -> std::io::Result<Vec<ContextFile>> {
     }
     directories.reverse();
 
-    let mut files = Vec::new();
     for dir in directories {
         for candidate in [
             dir.join("CLAUDE.md"),

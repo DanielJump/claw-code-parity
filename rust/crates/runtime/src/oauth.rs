@@ -284,6 +284,25 @@ pub fn save_oauth_credentials(token_set: &OAuthTokenSet) -> io::Result<()> {
     write_credentials_root(&path, &root)
 }
 
+pub fn save_api_key(api_key: &str) -> io::Result<()> {
+    let path = credentials_path()?;
+    let mut root = read_credentials_root(&path)?;
+    root.insert(
+        "apiKey".to_string(),
+        serde_json::Value::String(api_key.to_string()),
+    );
+    write_credentials_root(&path, &root)
+}
+
+pub fn load_api_key() -> io::Result<Option<String>> {
+    let path = credentials_path()?;
+    let root = read_credentials_root(&path)?;
+    Ok(root
+        .get("apiKey")
+        .and_then(|v| v.as_str())
+        .map(ToOwned::to_owned))
+}
+
 pub fn clear_oauth_credentials() -> io::Result<()> {
     let path = credentials_path()?;
     let mut root = read_credentials_root(&path)?;
@@ -325,11 +344,14 @@ fn generate_random_token(bytes: usize) -> io::Result<String> {
 }
 
 fn credentials_home_dir() -> io::Result<PathBuf> {
+    // Credentials are per-machine, not shared config.
+    // Only check CLAUDE_CONFIG_HOME (explicit override), not CLAUDE_CONFIG_DIR (shared repo).
     if let Some(path) = std::env::var_os("CLAUDE_CONFIG_HOME") {
         return Ok(PathBuf::from(path));
     }
     let home = std::env::var_os("HOME")
-        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "HOME is not set"))?;
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "HOME or USERPROFILE is not set"))?;
     Ok(PathBuf::from(home).join(".claude"))
 }
 

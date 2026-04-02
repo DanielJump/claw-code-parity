@@ -6,6 +6,21 @@ use std::path::{Path, PathBuf};
 use crate::json::JsonValue;
 use crate::sandbox::{FilesystemIsolationMode, SandboxConfig};
 
+/// Resolve the Claude config home directory.
+/// Checks `CLAUDE_CONFIG_HOME`, `CLAUDE_CONFIG_DIR`, `HOME`, `USERPROFILE` in order.
+#[must_use]
+pub fn resolve_config_home() -> PathBuf {
+    std::env::var_os("CLAUDE_CONFIG_HOME")
+        .or_else(|| std::env::var_os("CLAUDE_CONFIG_DIR"))
+        .map(PathBuf::from)
+        .or_else(|| {
+            std::env::var_os("HOME")
+                .or_else(|| std::env::var_os("USERPROFILE"))
+                .map(|home| PathBuf::from(home).join(".claude"))
+        })
+        .unwrap_or_else(|| PathBuf::from(".claude"))
+}
+
 pub const CLAUDE_CODE_SETTINGS_SCHEMA_NAME: &str = "SettingsSchema";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -174,10 +189,7 @@ impl ConfigLoader {
     #[must_use]
     pub fn default_for(cwd: impl Into<PathBuf>) -> Self {
         let cwd = cwd.into();
-        let config_home = std::env::var_os("CLAUDE_CONFIG_HOME")
-            .map(PathBuf::from)
-            .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".claude")))
-            .unwrap_or_else(|| PathBuf::from(".claude"));
+        let config_home = resolve_config_home();
         Self { cwd, config_home }
     }
 
@@ -511,7 +523,7 @@ fn parse_permission_mode_label(
     match mode {
         "default" | "plan" | "read-only" => Ok(ResolvedPermissionMode::ReadOnly),
         "acceptEdits" | "auto" | "workspace-write" => Ok(ResolvedPermissionMode::WorkspaceWrite),
-        "dontAsk" | "danger-full-access" => Ok(ResolvedPermissionMode::DangerFullAccess),
+        "dontAsk" | "danger-full-access" | "bypassPermissions" => Ok(ResolvedPermissionMode::DangerFullAccess),
         other => Err(ConfigError::Parse(format!(
             "{context}: unsupported permission mode {other}"
         ))),

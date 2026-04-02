@@ -1,0 +1,6 @@
+{
+  "anthropic_beta": "claude-code-20250219,context-1m-2025-08-07,interleaved-thinking-2025-05-14,redact-thinking-2026-02-12,context-management-2025-06-27,prompt-caching-scope-2026-01-05,advanced-tool-use-2025-11-20,effort-2025-11-24",
+  "user_agent": "claude-cli/2.1.90 (external, cli)",
+  "x_app": "cli",
+  "billing_header": "x-anthropic-billing-header: cc_version=2.1.90.0; cc_entrypoint=cli; cch=00000;"
+}
