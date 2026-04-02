@@ -521,24 +521,21 @@ fn run_logout() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn open_browser(url: &str) -> io::Result<()> {
-    let commands = if cfg!(target_os = "macos") {
-        vec![("open", vec![url])]
-    } else if cfg!(target_os = "windows") {
-        vec![("cmd", vec!["/C", "start", "", url])]
-    } else {
-        vec![("xdg-open", vec![url])]
-    };
-    for (program, args) in commands {
-        match Command::new(program).args(args).spawn() {
-            Ok(_) => return Ok(()),
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-            Err(error) => return Err(error),
-        }
+    #[cfg(target_os = "macos")]
+    {
+        return Command::new("open").arg(url).spawn().map(|_| ());
     }
-    Err(io::Error::new(
-        io::ErrorKind::NotFound,
-        "no supported browser opener command found",
-    ))
+    #[cfg(target_os = "windows")]
+    {
+        return Command::new("rundll32")
+            .args(["url.dll,FileProtocolHandler", url])
+            .spawn()
+            .map(|_| ());
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        return Command::new("xdg-open").arg(url).spawn().map(|_| ());
+    }
 }
 
 fn wait_for_oauth_callback(
